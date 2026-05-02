@@ -1,0 +1,49 @@
+body {
+    background: #f4f6f9;
+}
+
+.page-wrap {
+    padding: 24px 0 40px;
+}
+
+.summary-card {
+    min-height: 140px;
+}
+
+.summary-value {
+    font-size: 2rem;
+    font-weight: 700;
+}
+
+.table-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.question-card {
+    border: 1px solid #dee2e6;
+    border-radius: 12px;
+    padding: 16px;
+    background: #fff;
+    margin-bottom: 16px;
+}
+
+.answer-row {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.answer-row input[type="text"] {
+    flex: 1;
+}
+
+.chart-box {
+    min-height: 380px;
+}
+
+.home-link-card {
+    height: 100%;
+}

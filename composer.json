@@ -1,0 +1,10 @@
+{
+  "name": "internal/defects-quality-mvp",
+  "description": "Simple PHP + SQLite MVP for development defects and testing",
+  "type": "project",
+  "require": {
+    "php": ">=8.0",
+    "ext-pdo": "*",
+    "ext-pdo_sqlite": "*"
+  }
+}

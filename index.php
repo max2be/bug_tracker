@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 date_default_timezone_set('Europe/Volgograd');
 
-require dirname(__DIR__) . '/app/db.php';
-require dirname(__DIR__) . '/app/helpers.php';
-require dirname(__DIR__) . '/app/metrics.php';
+require __DIR__ . '/app/db.php';
+require __DIR__ . '/app/helpers.php';
+require __DIR__ . '/app/metrics.php';
 
 ensureSessionStarted();
 initializeDatabase();
@@ -258,7 +258,7 @@ function handleTaskCreatePage(): void
                 ]
             );
 
-            setFlash('success', 'Задача разработки создана.');
+            setFlash('success', 'Задача сохранена.');
             redirectTo('tasks');
         }
     }
@@ -270,85 +270,37 @@ function handleTaskCreatePage(): void
     ]);
 }
 
-function validateTaskForm(array &$form, ?int $taskId = null): array
-{
-    $errors = [];
-    $form['demand'] = normalizeDemandCode($form['demand']);
-    $form['code'] = normalizeKarmaDevCode($form['code']);
-
-    if ($form['demand'] === '') {
-        $errors[] = 'DEMAND обязателен.';
-    }
-
-    if ($form['code'] === '') {
-        $errors[] = 'Номер задачи разработки обязателен.';
-    }
-
-    $developmentHours = parseFloatValue($form['development_hours']);
-    if ($developmentHours < 0) {
-        $errors[] = 'Часы разработки должны быть больше или равны 0.';
-    }
-
-    $testScenariosCount = parseIntValue($form['test_scenarios_count']);
-    if ($testScenariosCount < 0) {
-        $errors[] = 'Количество сценариев должно быть больше или равно 0.';
-    }
-
-    $existingTask = dbOne(
-        'SELECT id FROM tasks WHERE code = :code' . ($taskId ? ' AND id != :id' : ''),
-        $taskId ? ['code' => $form['code'], 'id' => $taskId] : ['code' => $form['code']]
-    );
-
-    if ($existingTask) {
-        $errors[] = 'Задача с таким номером уже существует.';
-    }
-
-    $form['development_hours'] = (string) $developmentHours;
-    $form['test_scenarios_count'] = (string) max(0, $testScenariosCount);
-    $form['intro_testing_passed'] = (string) ((int) $form['intro_testing_passed'] === 1 ? 1 : 0);
-
-    return $errors;
-}
-
 function showTaskViewPage(): void
 {
-    $taskId = (int) ($_GET['id'] ?? 0);
-    $task = dbOne(
-        'SELECT tasks.*, demands.code AS demand_code
-         FROM tasks
-         JOIN demands ON demands.id = tasks.demand_id
-         WHERE tasks.id = :id',
-        ['id' => $taskId]
-    );
+    $id = (int) ($_GET['id'] ?? 0);
+    $task = getTaskForView($id);
 
     if (!$task) {
         setFlash('error', 'Задача не найдена.');
         redirectTo('tasks');
     }
 
-    $bugs = dbAll(
-        'SELECT * FROM bugs WHERE dev_task_id = :task_id ORDER BY discovered_at DESC, id DESC',
-        ['task_id' => $taskId]
+    $taskBugs = dbAll(
+        'SELECT bugs.*, demands.code AS demand_code
+         FROM bugs
+         JOIN demands ON demands.id = bugs.demand_id
+         WHERE bugs.dev_task_id = :task_id
+         ORDER BY bugs.discovered_at DESC, bugs.id DESC',
+        ['task_id' => $id]
     );
 
     render('tasks/view', [
-        'pageTitle' => $task['code'],
+        'pageTitle' => 'Карточка задачи',
         'task' => $task,
-        'bugs' => $bugs,
-        'taskMetrics' => calculateTaskMetrics($taskId),
+        'taskBugs' => $taskBugs,
+        'taskMetrics' => calculateTaskMetrics($id),
     ]);
 }
 
 function handleTaskEditPage(): void
 {
-    $taskId = (int) ($_GET['id'] ?? 0);
-    $task = dbOne(
-        'SELECT tasks.*, demands.code AS demand_code
-         FROM tasks
-         JOIN demands ON demands.id = tasks.demand_id
-         WHERE tasks.id = :id',
-        ['id' => $taskId]
-    );
+    $id = (int) ($_GET['id'] ?? 0);
+    $task = getTaskForView($id);
 
     if (!$task) {
         setFlash('error', 'Задача не найдена.');
@@ -358,7 +310,7 @@ function handleTaskEditPage(): void
     $form = [
         'demand' => $task['demand_code'],
         'code' => $task['code'],
-        'title' => (string) $task['title'],
+        'title' => $task['title'],
         'development_hours' => (string) $task['development_hours'],
         'intro_testing_passed' => (string) $task['intro_testing_passed'],
         'test_scenarios_count' => (string) $task['test_scenarios_count'],
@@ -377,21 +329,21 @@ function handleTaskEditPage(): void
             'responsible_developer' => trim((string) ($_POST['responsible_developer'] ?? '')),
         ];
 
-        $errors = validateTaskForm($form, $taskId);
+        $errors = validateTaskForm($form, $id);
 
         if (!$errors) {
             $demand = findOrCreateDemand($form['demand']);
 
             dbExecute(
-                'UPDATE tasks SET
-                    demand_id = :demand_id,
-                    code = :code,
-                    title = :title,
-                    development_hours = :development_hours,
-                    intro_testing_passed = :intro_testing_passed,
-                    test_scenarios_count = :test_scenarios_count,
-                    responsible_developer = :responsible_developer,
-                    updated_at = :updated_at
+                'UPDATE tasks
+                 SET demand_id = :demand_id,
+                     code = :code,
+                     title = :title,
+                     development_hours = :development_hours,
+                     intro_testing_passed = :intro_testing_passed,
+                     test_scenarios_count = :test_scenarios_count,
+                     responsible_developer = :responsible_developer,
+                     updated_at = :updated_at
                  WHERE id = :id',
                 [
                     'demand_id' => $demand['id'],
@@ -402,20 +354,20 @@ function handleTaskEditPage(): void
                     'test_scenarios_count' => parseIntValue($form['test_scenarios_count']),
                     'responsible_developer' => $form['responsible_developer'],
                     'updated_at' => now(),
-                    'id' => $taskId,
+                    'id' => $id,
                 ]
             );
 
-            setFlash('success', 'Задача разработки обновлена.');
-            redirectTo('tasks_view', ['id' => $taskId]);
+            setFlash('success', 'Задача обновлена.');
+            redirectTo('tasks_view', ['id' => $id]);
         }
     }
 
     render('tasks/edit', [
         'pageTitle' => 'Редактирование задачи',
+        'taskId' => $id,
         'form' => $form,
         'errors' => $errors,
-        'taskId' => $taskId,
     ]);
 }
 
@@ -425,10 +377,53 @@ function handleTaskDeleteAction(): void
         redirectTo('tasks');
     }
 
-    $taskId = (int) ($_GET['id'] ?? 0);
-    dbExecute('DELETE FROM tasks WHERE id = :id', ['id' => $taskId]);
-    setFlash('success', 'Задача и связанные баги удалены.');
+    $id = (int) ($_GET['id'] ?? 0);
+    dbExecute('DELETE FROM tasks WHERE id = :id', ['id' => $id]);
+
+    setFlash('success', 'Задача удалена.');
     redirectTo('tasks');
+}
+
+function validateTaskForm(array &$form, int $taskId = 0): array
+{
+    $errors = [];
+
+    $form['demand'] = normalizeDemandCode($form['demand']);
+    $form['code'] = normalizeKarmaDevCode($form['code']);
+
+    if ($form['demand'] === '') {
+        $errors[] = 'DEMAND обязателен.';
+    }
+
+    if ($form['code'] === '') {
+        $errors[] = 'Номер задачи обязателен.';
+    }
+
+    if (parseFloatValue($form['development_hours']) < 0) {
+        $errors[] = 'Часы разработки не могут быть отрицательными.';
+    }
+
+    if (parseIntValue($form['test_scenarios_count']) < 0) {
+        $errors[] = 'Количество сценариев не может быть отрицательным.';
+    }
+
+    $existingTask = dbOne('SELECT id FROM tasks WHERE code = :code', ['code' => $form['code']]);
+    if ($existingTask && (int) $existingTask['id'] !== $taskId) {
+        $errors[] = 'Задача с таким номером уже существует.';
+    }
+
+    return $errors;
+}
+
+function getTaskForView(int $id): ?array
+{
+    return dbOne(
+        'SELECT tasks.*, demands.code AS demand_code
+         FROM tasks
+         JOIN demands ON demands.id = tasks.demand_id
+         WHERE tasks.id = :id',
+        ['id' => $id]
+    );
 }
 
 function showBugsListPage(): void
@@ -445,30 +440,6 @@ function showBugsListPage(): void
         'status' => trim((string) ($_GET['status'] ?? '')),
     ];
 
-    [$where, $params, $filters] = buildBugListQueryParts($filters);
-
-    $bugs = dbAll(
-        'SELECT
-            bugs.*,
-            demands.code AS demand_code,
-            tasks.code AS dev_task_code
-         FROM bugs
-         JOIN demands ON demands.id = bugs.demand_id
-         JOIN tasks ON tasks.id = bugs.dev_task_id
-         WHERE ' . implode(' AND ', $where) . '
-         ORDER BY bugs.discovered_at DESC, bugs.id DESC',
-        $params
-    );
-
-    render('bugs/list', [
-        'pageTitle' => 'Список багов',
-        'filters' => $filters,
-        'bugs' => $bugs,
-    ]);
-}
-
-function buildBugListQueryParts(array $filters): array
-{
     $where = ['1 = 1'];
     $params = [];
 
@@ -483,7 +454,7 @@ function buildBugListQueryParts(array $filters): array
     }
 
     if ($filters['month'] !== '') {
-        $where[] = 'substr(bugs.discovered_at, 1, 7) = :month';
+        $where[] = "strftime('%Y-%m', bugs.discovered_at) = :month";
         $params['month'] = $filters['month'];
     }
 
@@ -499,41 +470,101 @@ function buildBugListQueryParts(array $filters): array
         $params['task_code'] = $filters['task'];
     }
 
-    foreach (['bug_reason', 'found_stage', 'severity', 'status'] as $field) {
-        if ($filters[$field] !== '') {
-            $where[] = 'bugs.' . $field . ' = :' . $field;
-            $params[$field] = $filters[$field];
-        }
+    if ($filters['bug_reason'] !== '') {
+        $where[] = 'bugs.bug_reason = :bug_reason';
+        $params['bug_reason'] = $filters['bug_reason'];
     }
 
-    return [$where, $params, $filters];
+    if ($filters['found_stage'] !== '') {
+        $where[] = 'bugs.found_stage = :found_stage';
+        $params['found_stage'] = $filters['found_stage'];
+    }
+
+    if ($filters['severity'] !== '') {
+        $where[] = 'bugs.severity = :severity';
+        $params['severity'] = $filters['severity'];
+    }
+
+    if ($filters['status'] !== '') {
+        $where[] = 'bugs.status = :status';
+        $params['status'] = $filters['status'];
+    }
+
+    $bugs = dbAll(
+        'SELECT
+            bugs.*,
+            demands.code AS demand_code,
+            tasks.code AS dev_task_code,
+            tasks.title AS dev_task_title
+         FROM bugs
+         JOIN demands ON demands.id = bugs.demand_id
+         JOIN tasks ON tasks.id = bugs.dev_task_id
+         WHERE ' . implode(' AND ', $where) . '
+         ORDER BY bugs.discovered_at DESC, bugs.id DESC',
+        $params
+    );
+
+    render('bugs/list', [
+        'pageTitle' => 'Список багов',
+        'filters' => $filters,
+        'bugs' => $bugs,
+        'bugReasons' => BUG_REASON_OPTIONS,
+        'foundStages' => FOUND_STAGE_OPTIONS,
+        'severities' => SEVERITY_OPTIONS,
+        'statuses' => BUG_STATUS_OPTIONS,
+    ]);
 }
 
 function handleBugCreatePage(): void
 {
     $form = [
-        'demand' => trim((string) ($_GET['demand'] ?? '')),
+        'demand' => '',
         'dev_task_code' => trim((string) ($_GET['task'] ?? '')),
-        'bug_task_code' => trim((string) ($_GET['task'] ?? '')),
+        'bug_task_code' => '',
         'fix_hours' => '0',
-        'bug_reason' => BUG_REASON_OPTIONS[0],
+        'bug_reason' => '',
         'bug_reason_comment' => '',
         'discovered_at' => date('Y-m-d'),
         'fixed_at' => '',
-        'found_by' => FOUND_BY_OPTIONS[0],
-        'found_stage' => FOUND_STAGE_OPTIONS[3],
-        'severity' => SEVERITY_OPTIONS[1],
-        'bug_type' => BUG_TYPE_OPTIONS[0],
-        'status' => BUG_STATUS_OPTIONS[0],
+        'found_by' => '',
+        'found_stage' => '',
+        'severity' => '',
+        'bug_type' => '',
+        'status' => '',
     ];
     $errors = [];
 
+    if ($form['dev_task_code'] !== '') {
+        $form['dev_task_code'] = normalizeKarmaDevCode($form['dev_task_code']);
+        $task = getTaskByCode($form['dev_task_code']);
+        if ($task) {
+            $form['demand'] = $task['demand_code'];
+        }
+    }
+
     if (isPost()) {
-        $form = getBugFormDataFromPost();
+        $form = [
+            'demand' => trim((string) ($_POST['demand'] ?? '')),
+            'dev_task_code' => trim((string) ($_POST['dev_task_code'] ?? '')),
+            'bug_task_code' => trim((string) ($_POST['bug_task_code'] ?? '')),
+            'fix_hours' => trim((string) ($_POST['fix_hours'] ?? '0')),
+            'bug_reason' => trim((string) ($_POST['bug_reason'] ?? '')),
+            'bug_reason_comment' => trim((string) ($_POST['bug_reason_comment'] ?? '')),
+            'discovered_at' => trim((string) ($_POST['discovered_at'] ?? '')),
+            'fixed_at' => trim((string) ($_POST['fixed_at'] ?? '')),
+            'found_by' => trim((string) ($_POST['found_by'] ?? '')),
+            'found_stage' => trim((string) ($_POST['found_stage'] ?? '')),
+            'severity' => trim((string) ($_POST['severity'] ?? '')),
+            'bug_type' => trim((string) ($_POST['bug_type'] ?? '')),
+            'status' => trim((string) ($_POST['status'] ?? '')),
+        ];
+
         $errors = validateBugForm($form);
 
         if (!$errors) {
+            $demand = findOrCreateDemand($form['demand']);
             $devTask = getTaskByCode($form['dev_task_code']);
+
             dbExecute(
                 'INSERT INTO bugs (
                     demand_id,
@@ -569,7 +600,7 @@ function handleBugCreatePage(): void
                     :updated_at
                 )',
                 [
-                    'demand_id' => $devTask['demand_id'],
+                    'demand_id' => $demand['id'],
                     'dev_task_id' => $devTask['id'],
                     'bug_task_code' => normalizeKarmaDevCode($form['bug_task_code']),
                     'fix_hours' => parseFloatValue($form['fix_hours']),
@@ -596,84 +627,19 @@ function handleBugCreatePage(): void
         'pageTitle' => 'Добавление бага',
         'form' => $form,
         'errors' => $errors,
+        'bugReasons' => BUG_REASON_OPTIONS,
+        'foundByOptions' => FOUND_BY_OPTIONS,
+        'foundStages' => FOUND_STAGE_OPTIONS,
+        'severities' => SEVERITY_OPTIONS,
+        'bugTypes' => BUG_TYPE_OPTIONS,
+        'statuses' => BUG_STATUS_OPTIONS,
     ]);
-}
-
-function getBugFormDataFromPost(): array
-{
-    return [
-        'demand' => trim((string) ($_POST['demand'] ?? '')),
-        'dev_task_code' => trim((string) ($_POST['dev_task_code'] ?? '')),
-        'bug_task_code' => trim((string) ($_POST['bug_task_code'] ?? '')),
-        'fix_hours' => trim((string) ($_POST['fix_hours'] ?? '0')),
-        'bug_reason' => trim((string) ($_POST['bug_reason'] ?? BUG_REASON_OPTIONS[0])),
-        'bug_reason_comment' => trim((string) ($_POST['bug_reason_comment'] ?? '')),
-        'discovered_at' => trim((string) ($_POST['discovered_at'] ?? '')),
-        'fixed_at' => trim((string) ($_POST['fixed_at'] ?? '')),
-        'found_by' => trim((string) ($_POST['found_by'] ?? FOUND_BY_OPTIONS[0])),
-        'found_stage' => trim((string) ($_POST['found_stage'] ?? FOUND_STAGE_OPTIONS[0])),
-        'severity' => trim((string) ($_POST['severity'] ?? SEVERITY_OPTIONS[0])),
-        'bug_type' => trim((string) ($_POST['bug_type'] ?? BUG_TYPE_OPTIONS[0])),
-        'status' => trim((string) ($_POST['status'] ?? BUG_STATUS_OPTIONS[0])),
-    ];
-}
-
-function validateBugForm(array &$form, ?int $bugId = null): array
-{
-    $errors = [];
-    $form['demand'] = normalizeDemandCode($form['demand']);
-    $form['dev_task_code'] = normalizeKarmaDevCode($form['dev_task_code']);
-    $form['bug_task_code'] = normalizeKarmaDevCode($form['bug_task_code']);
-
-    if ($form['demand'] === '') {
-        $errors[] = 'DEMAND обязателен.';
-    }
-
-    if ($form['dev_task_code'] === '') {
-        $errors[] = 'Задача разработки обязательна.';
-    }
-
-    if ($form['bug_task_code'] === '') {
-        $errors[] = 'Задача, в которой возник баг, обязательна.';
-    }
-
-    $fixHours = parseFloatValue($form['fix_hours']);
-    if ($fixHours < 0) {
-        $errors[] = 'Часы исправления должны быть больше или равны 0.';
-    }
-
-    if ($form['discovered_at'] === '') {
-        $errors[] = 'Дата обнаружения обязательна.';
-    }
-
-    $devTask = getTaskByCode($form['dev_task_code']);
-    if (!$devTask) {
-        $errors[] = 'Задача разработки не найдена. Сначала создайте задачу.';
-    } elseif ($form['demand'] !== '' && $devTask['demand_code'] !== $form['demand']) {
-        $errors[] = 'DEMAND должен совпадать с DEMAND выбранной задачи разработки.';
-    }
-
-    $form['fix_hours'] = (string) $fixHours;
-
-    return $errors;
 }
 
 function showBugViewPage(): void
 {
-    $bugId = (int) ($_GET['id'] ?? 0);
-    $bug = dbOne(
-        'SELECT
-            bugs.*,
-            demands.code AS demand_code,
-            tasks.code AS dev_task_code,
-            tasks.title AS dev_task_title,
-            tasks.development_hours
-         FROM bugs
-         JOIN demands ON demands.id = bugs.demand_id
-         JOIN tasks ON tasks.id = bugs.dev_task_id
-         WHERE bugs.id = :id',
-        ['id' => $bugId]
-    );
+    $id = (int) ($_GET['id'] ?? 0);
+    $bug = getBugForView($id);
 
     if (!$bug) {
         setFlash('error', 'Баг не найден.');
@@ -681,25 +647,15 @@ function showBugViewPage(): void
     }
 
     render('bugs/view', [
-        'pageTitle' => 'Баг #' . $bug['id'],
+        'pageTitle' => 'Карточка бага',
         'bug' => $bug,
     ]);
 }
 
 function handleBugEditPage(): void
 {
-    $bugId = (int) ($_GET['id'] ?? 0);
-    $bug = dbOne(
-        'SELECT
-            bugs.*,
-            demands.code AS demand_code,
-            tasks.code AS dev_task_code
-         FROM bugs
-         JOIN demands ON demands.id = bugs.demand_id
-         JOIN tasks ON tasks.id = bugs.dev_task_id
-         WHERE bugs.id = :id',
-        ['id' => $bugId]
-    );
+    $id = (int) ($_GET['id'] ?? 0);
+    $bug = getBugForView($id);
 
     if (!$bug) {
         setFlash('error', 'Баг не найден.');
@@ -724,30 +680,47 @@ function handleBugEditPage(): void
     $errors = [];
 
     if (isPost()) {
-        $form = getBugFormDataFromPost();
-        $errors = validateBugForm($form, $bugId);
+        $form = [
+            'demand' => trim((string) ($_POST['demand'] ?? '')),
+            'dev_task_code' => trim((string) ($_POST['dev_task_code'] ?? '')),
+            'bug_task_code' => trim((string) ($_POST['bug_task_code'] ?? '')),
+            'fix_hours' => trim((string) ($_POST['fix_hours'] ?? '0')),
+            'bug_reason' => trim((string) ($_POST['bug_reason'] ?? '')),
+            'bug_reason_comment' => trim((string) ($_POST['bug_reason_comment'] ?? '')),
+            'discovered_at' => trim((string) ($_POST['discovered_at'] ?? '')),
+            'fixed_at' => trim((string) ($_POST['fixed_at'] ?? '')),
+            'found_by' => trim((string) ($_POST['found_by'] ?? '')),
+            'found_stage' => trim((string) ($_POST['found_stage'] ?? '')),
+            'severity' => trim((string) ($_POST['severity'] ?? '')),
+            'bug_type' => trim((string) ($_POST['bug_type'] ?? '')),
+            'status' => trim((string) ($_POST['status'] ?? '')),
+        ];
+
+        $errors = validateBugForm($form);
 
         if (!$errors) {
+            $demand = findOrCreateDemand($form['demand']);
             $devTask = getTaskByCode($form['dev_task_code']);
+
             dbExecute(
-                'UPDATE bugs SET
-                    demand_id = :demand_id,
-                    dev_task_id = :dev_task_id,
-                    bug_task_code = :bug_task_code,
-                    fix_hours = :fix_hours,
-                    bug_reason = :bug_reason,
-                    bug_reason_comment = :bug_reason_comment,
-                    discovered_at = :discovered_at,
-                    fixed_at = :fixed_at,
-                    found_by = :found_by,
-                    found_stage = :found_stage,
-                    severity = :severity,
-                    bug_type = :bug_type,
-                    status = :status,
-                    updated_at = :updated_at
+                'UPDATE bugs
+                 SET demand_id = :demand_id,
+                     dev_task_id = :dev_task_id,
+                     bug_task_code = :bug_task_code,
+                     fix_hours = :fix_hours,
+                     bug_reason = :bug_reason,
+                     bug_reason_comment = :bug_reason_comment,
+                     discovered_at = :discovered_at,
+                     fixed_at = :fixed_at,
+                     found_by = :found_by,
+                     found_stage = :found_stage,
+                     severity = :severity,
+                     bug_type = :bug_type,
+                     status = :status,
+                     updated_at = :updated_at
                  WHERE id = :id',
                 [
-                    'demand_id' => $devTask['demand_id'],
+                    'demand_id' => $demand['id'],
                     'dev_task_id' => $devTask['id'],
                     'bug_task_code' => normalizeKarmaDevCode($form['bug_task_code']),
                     'fix_hours' => parseFloatValue($form['fix_hours']),
@@ -761,20 +734,26 @@ function handleBugEditPage(): void
                     'bug_type' => $form['bug_type'],
                     'status' => $form['status'],
                     'updated_at' => now(),
-                    'id' => $bugId,
+                    'id' => $id,
                 ]
             );
 
             setFlash('success', 'Баг обновлен.');
-            redirectTo('bugs_view', ['id' => $bugId]);
+            redirectTo('bugs_view', ['id' => $id]);
         }
     }
 
     render('bugs/edit', [
         'pageTitle' => 'Редактирование бага',
+        'bugId' => $id,
         'form' => $form,
         'errors' => $errors,
-        'bugId' => $bugId,
+        'bugReasons' => BUG_REASON_OPTIONS,
+        'foundByOptions' => FOUND_BY_OPTIONS,
+        'foundStages' => FOUND_STAGE_OPTIONS,
+        'severities' => SEVERITY_OPTIONS,
+        'bugTypes' => BUG_TYPE_OPTIONS,
+        'statuses' => BUG_STATUS_OPTIONS,
     ]);
 }
 
@@ -784,10 +763,67 @@ function handleBugDeleteAction(): void
         redirectTo('bugs');
     }
 
-    $bugId = (int) ($_GET['id'] ?? 0);
-    dbExecute('DELETE FROM bugs WHERE id = :id', ['id' => $bugId]);
+    $id = (int) ($_GET['id'] ?? 0);
+    dbExecute('DELETE FROM bugs WHERE id = :id', ['id' => $id]);
+
     setFlash('success', 'Баг удален.');
     redirectTo('bugs');
+}
+
+function validateBugForm(array &$form): array
+{
+    $errors = [];
+
+    $form['demand'] = normalizeDemandCode($form['demand']);
+    $form['dev_task_code'] = normalizeKarmaDevCode($form['dev_task_code']);
+    $form['bug_task_code'] = normalizeKarmaDevCode($form['bug_task_code']);
+
+    if ($form['demand'] === '') {
+        $errors[] = 'DEMAND обязателен.';
+    }
+
+    if ($form['dev_task_code'] === '') {
+        $errors[] = 'Задача разработки обязательна.';
+    }
+
+    if ($form['bug_task_code'] === '') {
+        $errors[] = 'Задача, в которой возник баг, обязательна.';
+    }
+
+    if ($form['discovered_at'] === '') {
+        $errors[] = 'Дата обнаружения обязательна.';
+    }
+
+    if (parseFloatValue($form['fix_hours']) < 0) {
+        $errors[] = 'Часы исправления не могут быть отрицательными.';
+    }
+
+    $devTask = getTaskByCode($form['dev_task_code']);
+    if (!$devTask) {
+        $errors[] = 'Задача разработки не найдена. Сначала создайте задачу.';
+    }
+
+    return $errors;
+}
+
+function getBugForView(int $id): ?array
+{
+    return dbOne(
+        'SELECT
+            bugs.*,
+            demands.code AS demand_code,
+            tasks.code AS dev_task_code,
+            tasks.title AS dev_task_title,
+            tasks.development_hours,
+            tasks.intro_testing_passed,
+            tasks.test_scenarios_count,
+            tasks.responsible_developer
+         FROM bugs
+         JOIN demands ON demands.id = bugs.demand_id
+         JOIN tasks ON tasks.id = bugs.dev_task_id
+         WHERE bugs.id = :id',
+        ['id' => $id]
+    );
 }
 
 function showMetricsPage(): void
@@ -799,15 +835,12 @@ function showMetricsPage(): void
         'responsible_developer' => trim((string) ($_GET['responsible_developer'] ?? '')),
     ];
 
-    if ($filters['demand'] !== '') {
-        $filters['demand'] = normalizeDemandCode($filters['demand']);
-    }
-
     render('metrics/index', [
         'pageTitle' => 'Метрики',
         'filters' => $filters,
         'metrics' => calculateOverviewMetrics($filters),
-        'demandMetrics' => getDemandMetricsRows($filters),
+        'demandRows' => getDemandMetricsRows($filters),
+        'monthRows' => getMonthlyMetricsRows($filters),
     ]);
 }
 
@@ -819,15 +852,11 @@ function showChartsPage(): void
         'demand' => trim((string) ($_GET['demand'] ?? '')),
     ];
 
-    if ($filters['demand'] !== '') {
-        $filters['demand'] = normalizeDemandCode($filters['demand']);
-    }
-
     render('charts/index', [
         'pageTitle' => 'Графики',
         'filters' => $filters,
-        'chartData' => getChartsData($filters),
         'includeCharts' => true,
+        'chartsData' => buildChartsData($filters),
     ]);
 }
 
@@ -840,61 +869,21 @@ function exportQualityReport(): void
         'responsible_developer' => trim((string) ($_GET['responsible_developer'] ?? '')),
     ];
 
-    if ($filters['demand'] !== '') {
-        $filters['demand'] = normalizeDemandCode($filters['demand']);
-    }
+    $bugs = getBugsForExport($filters);
+    $tasks = getTasksForExport($filters);
+    $demandRows = getDemandMetricsRows($filters);
+    $monthRows = getMonthlyMetricsRows($filters);
 
-    $taskFilter = buildTaskMetricsFilter($filters);
-    $bugFilter = buildBugMetricsFilter($filters);
-
-    $tasks = dbAll(
-        'SELECT tasks.*, demands.code AS demand_code
-         FROM tasks
-         JOIN demands ON demands.id = tasks.demand_id
-         WHERE ' . $taskFilter['sql'] . '
-         ORDER BY tasks.id DESC',
-        $taskFilter['params']
-    );
-
-    $bugs = dbAll(
-        'SELECT bugs.*, demands.code AS demand_code, tasks.code AS dev_task_code
-         FROM bugs
-         JOIN tasks ON tasks.id = bugs.dev_task_id
-         JOIN demands ON demands.id = bugs.demand_id
-         WHERE ' . $bugFilter['sql'] . '
-         ORDER BY bugs.discovered_at DESC, bugs.id DESC',
-        $bugFilter['params']
-    );
-
-    $demandMetrics = getDemandMetricsRows($filters);
-    $monthlyMetrics = getMonthlyMetricsRows($filters);
-
-    $fileName = 'defects-report-' . date('Y-m-d') . '.xls';
+    $filename = 'defects-report-' . date('Y-m-d') . '.xls';
 
     header('Content-Type: application/vnd.ms-excel; charset=UTF-8');
-    header('Content-Disposition: attachment; filename="' . $fileName . '"');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
 
-    echo "\xEF\xBB\xBF";
-    echo '<html><head><meta charset="UTF-8"></head><body>';
-    echo '<h1>Defects Report</h1>';
+    echo "<html><head><meta charset='UTF-8'></head><body>";
 
-    echo '<h2>Список задач</h2><table border="1"><tr><th>ID</th><th>DEMAND</th><th>Задача</th><th>Название</th><th>Часы разработки</th><th>Вводное тестирование</th><th>Сценарии</th><th>Ответственный</th><th>Создана</th></tr>';
-    foreach ($tasks as $task) {
-        echo '<tr>';
-        echo '<td>' . e($task['id']) . '</td>';
-        echo '<td>' . e($task['demand_code']) . '</td>';
-        echo '<td>' . e($task['code']) . '</td>';
-        echo '<td>' . e($task['title']) . '</td>';
-        echo '<td>' . e($task['development_hours']) . '</td>';
-        echo '<td>' . e(boolLabel($task['intro_testing_passed'])) . '</td>';
-        echo '<td>' . e($task['test_scenarios_count']) . '</td>';
-        echo '<td>' . e($task['responsible_developer']) . '</td>';
-        echo '<td>' . e($task['created_at']) . '</td>';
-        echo '</tr>';
-    }
-    echo '</table>';
-
-    echo '<h2>Список багов</h2><table border="1"><tr><th>ID</th><th>Дата обнаружения</th><th>DEMAND</th><th>Задача разработки</th><th>Задача бага</th><th>Часы исправления</th><th>Причина</th><th>Этап</th><th>Критичность</th><th>Тип</th><th>Статус</th></tr>';
+    echo '<table border="1">';
+    echo '<tr><th colspan="12">Список багов</th></tr>';
+    echo '<tr><th>ID</th><th>Дата обнаружения</th><th>DEMAND</th><th>Задача разработки</th><th>Задача бага</th><th>Часы исправления</th><th>Причина</th><th>Этап</th><th>Критичность</th><th>Тип</th><th>Статус</th><th>Кто нашел</th></tr>';
     foreach ($bugs as $bug) {
         echo '<tr>';
         echo '<td>' . e($bug['id']) . '</td>';
@@ -908,12 +897,33 @@ function exportQualityReport(): void
         echo '<td>' . e($bug['severity']) . '</td>';
         echo '<td>' . e($bug['bug_type']) . '</td>';
         echo '<td>' . e($bug['status']) . '</td>';
+        echo '<td>' . e($bug['found_by']) . '</td>';
         echo '</tr>';
     }
-    echo '</table>';
+    echo '</table><br>';
 
-    echo '<h2>Метрики по DEMAND</h2><table border="1"><tr><th>DEMAND</th><th>Задачи</th><th>Баги</th><th>Часы разработки</th><th>Часы исправления</th><th>Defects per 40h</th><th>Average Fix Hours</th><th>Bug Fix Ratio</th><th>Intro Testing Coverage</th><th>Test Scenarios per Task</th><th>Bugs per Test Scenario</th></tr>';
-    foreach ($demandMetrics as $row) {
+    echo '<table border="1">';
+    echo '<tr><th colspan="9">Список задач</th></tr>';
+    echo '<tr><th>ID</th><th>DEMAND</th><th>Задача</th><th>Название</th><th>Часы разработки</th><th>Вводное тестирование</th><th>Сценарии</th><th>Ответственный</th><th>Количество багов</th></tr>';
+    foreach ($tasks as $task) {
+        echo '<tr>';
+        echo '<td>' . e($task['id']) . '</td>';
+        echo '<td>' . e($task['demand_code']) . '</td>';
+        echo '<td>' . e($task['code']) . '</td>';
+        echo '<td>' . e($task['title']) . '</td>';
+        echo '<td>' . e($task['development_hours']) . '</td>';
+        echo '<td>' . e(boolLabel($task['intro_testing_passed'])) . '</td>';
+        echo '<td>' . e($task['test_scenarios_count']) . '</td>';
+        echo '<td>' . e($task['responsible_developer']) . '</td>';
+        echo '<td>' . e($task['bugs_count']) . '</td>';
+        echo '</tr>';
+    }
+    echo '</table><br>';
+
+    echo '<table border="1">';
+    echo '<tr><th colspan="8">Метрики по DEMAND</th></tr>';
+    echo '<tr><th>DEMAND</th><th>Задач</th><th>Багов</th><th>Часы разработки</th><th>Часы исправления</th><th>Defects per 40h</th><th>Bug Fix Ratio</th><th>Bugs per Test Scenario</th></tr>';
+    foreach ($demandRows as $row) {
         echo '<tr>';
         echo '<td>' . e($row['demand_code']) . '</td>';
         echo '<td>' . e($row['tasks_count']) . '</td>';
@@ -921,22 +931,25 @@ function exportQualityReport(): void
         echo '<td>' . e($row['development_hours_sum']) . '</td>';
         echo '<td>' . e($row['fix_hours_sum']) . '</td>';
         echo '<td>' . e($row['defects_per_40h']) . '</td>';
-        echo '<td>' . e($row['average_fix_hours']) . '</td>';
-        echo '<td>' . e($row['bug_fix_ratio']) . '</td>';
-        echo '<td>' . e($row['intro_testing_coverage']) . '</td>';
-        echo '<td>' . e($row['test_scenarios_per_task']) . '</td>';
+        echo '<td>' . e($row['bug_fix_ratio']) . '%</td>';
         echo '<td>' . e($row['bugs_per_test_scenario']) . '</td>';
         echo '</tr>';
     }
-    echo '</table>';
+    echo '</table><br>';
 
-    echo '<h2>Метрики по месяцам</h2><table border="1"><tr><th>Месяц</th><th>Количество багов</th><th>Часы исправления</th><th>Average Fix Hours</th></tr>';
-    foreach ($monthlyMetrics as $row) {
+    echo '<table border="1">';
+    echo '<tr><th colspan="8">Метрики по месяцам</th></tr>';
+    echo '<tr><th>Месяц</th><th>Багов</th><th>Часы исправления</th><th>Средние часы исправления</th><th>Уникальных DEMAND</th><th>Уникальных задач</th><th>Critical</th><th>Production</th></tr>';
+    foreach ($monthRows as $row) {
         echo '<tr>';
         echo '<td>' . e($row['month']) . '</td>';
         echo '<td>' . e($row['bugs_count']) . '</td>';
         echo '<td>' . e($row['fix_hours_sum']) . '</td>';
         echo '<td>' . e($row['average_fix_hours']) . '</td>';
+        echo '<td>' . e($row['demands_count']) . '</td>';
+        echo '<td>' . e($row['tasks_count']) . '</td>';
+        echo '<td>' . e($row['critical_count']) . '</td>';
+        echo '<td>' . e($row['production_count']) . '</td>';
         echo '</tr>';
     }
     echo '</table>';
@@ -945,11 +958,51 @@ function exportQualityReport(): void
     exit;
 }
 
+function getBugsForExport(array $filters): array
+{
+    $filter = buildBugMetricsFilter($filters);
+
+    return dbAll(
+        'SELECT
+            bugs.*,
+            demands.code AS demand_code,
+            tasks.code AS dev_task_code
+         FROM bugs
+         JOIN demands ON demands.id = bugs.demand_id
+         JOIN tasks ON tasks.id = bugs.dev_task_id
+         WHERE ' . $filter['sql'] . '
+         ORDER BY bugs.discovered_at DESC, bugs.id DESC',
+        $filter['params']
+    );
+}
+
+function getTasksForExport(array $filters): array
+{
+    $filter = buildTaskMetricsFilter($filters);
+
+    return dbAll(
+        'SELECT
+            tasks.*,
+            demands.code AS demand_code,
+            COUNT(bugs.id) AS bugs_count
+         FROM tasks
+         JOIN demands ON demands.id = tasks.demand_id
+         LEFT JOIN bugs ON bugs.dev_task_id = tasks.id
+         WHERE ' . $filter['sql'] . '
+         GROUP BY tasks.id
+         ORDER BY tasks.id DESC',
+        $filter['params']
+    );
+}
+
 function showTestingHomePage(?array $form = null, array $errors = []): void
 {
     render('testing/home', [
-        'pageTitle' => 'Тестирование',
-        'form' => $form ?? ['full_name' => '', 'task_code' => ''],
+        'pageTitle' => 'Тестирование программиста',
+        'form' => $form ?? [
+            'full_name' => '',
+            'task_code' => '',
+        ],
         'errors' => $errors,
     ]);
 }
@@ -962,11 +1015,9 @@ function handleTestStartAction(): void
 
     $form = [
         'full_name' => trim((string) ($_POST['full_name'] ?? '')),
-        'task_code' => trim((string) ($_POST['task_code'] ?? '')),
+        'task_code' => normalizeKarmaDevCode((string) ($_POST['task_code'] ?? '')),
     ];
     $errors = [];
-
-    $form['task_code'] = normalizeKarmaDevCode($form['task_code']);
 
     if ($form['full_name'] === '') {
         $errors[] = 'ФИО обязательно.';
@@ -976,35 +1027,33 @@ function handleTestStartAction(): void
         $errors[] = 'Номер тестовой задачи обязателен.';
     }
 
-    $task = $form['task_code'] !== ''
-        ? getTestTaskByCode($form['task_code'])
-        : null;
+    $task = dbOne(
+        'SELECT * FROM test_tasks WHERE code = :code AND is_active = 1',
+        ['code' => $form['task_code']]
+    );
 
-    if (!$errors && (!$task || (int) $task['is_active'] !== 1)) {
+    if (!$task) {
         $errors[] = 'Активная тестовая задача не найдена.';
     }
 
-    if (!$errors) {
-        $taskWithQuestions = getTestTaskWithQuestions((int) $task['id']);
-        if (!$taskWithQuestions || !$taskWithQuestions['questions']) {
-            $errors[] = 'У этой тестовой задачи нет вопросов.';
-        } else {
-            render('testing/questions', [
-                'pageTitle' => 'Тест ' . $taskWithQuestions['code'],
-                'task' => $taskWithQuestions,
-                'fullName' => $form['full_name'],
-                'startedAt' => date('c'),
-            ]);
-            return;
-        }
+    if ($errors) {
+        showTestingHomePage($form, $errors);
+        return;
     }
 
-    showTestingHomePage($form, $errors);
-}
+    $fullTask = getTestTaskWithQuestions((int) $task['id']);
 
-function getTestTaskByCode(string $code): ?array
-{
-    return dbOne('SELECT * FROM test_tasks WHERE code = :code', ['code' => normalizeKarmaDevCode($code)]);
+    if (!$fullTask || !$fullTask['questions']) {
+        showTestingHomePage($form, ['У этой тестовой задачи нет вопросов.']);
+        return;
+    }
+
+    render('testing/questions', [
+        'pageTitle' => 'Прохождение теста',
+        'task' => $fullTask,
+        'fullName' => $form['full_name'],
+        'startedAt' => now(),
+    ]);
 }
 
 function handleTestSubmitAction(): void
@@ -1014,44 +1063,45 @@ function handleTestSubmitAction(): void
     }
 
     $fullName = trim((string) ($_POST['full_name'] ?? ''));
-    $testTaskId = (int) ($_POST['test_task_id'] ?? 0);
     $taskCode = normalizeKarmaDevCode((string) ($_POST['task_code'] ?? ''));
-    $startedAt = trim((string) ($_POST['started_at'] ?? ''));
-
-    if ($fullName === '' || $testTaskId <= 0 || $taskCode === '') {
-        setFlash('error', 'Некорректные данные тестирования.');
-        redirectTo('test');
-    }
+    $testTaskId = (int) ($_POST['test_task_id'] ?? 0);
+    $startedAt = trim((string) ($_POST['started_at'] ?? now()));
 
     $task = getTestTaskWithQuestions($testTaskId);
-    if (!$task || $task['code'] !== $taskCode) {
+    if (!$task) {
         setFlash('error', 'Тестовая задача не найдена.');
         redirectTo('test');
     }
 
+    $finishedAt = now();
+    $startedTimestamp = strtotime($startedAt) ?: time();
+    $finishedTimestamp = strtotime($finishedAt) ?: time();
+    $durationSeconds = max(0, $finishedTimestamp - $startedTimestamp);
+
     $correctAnswers = 0;
-    $attemptAnswers = [];
+    $totalQuestions = count($task['questions']);
+    $attemptAnswerRows = [];
 
     foreach ($task['questions'] as $question) {
-        $selectedAnswerId = isset($_POST['question_' . $question['id']]) ? (int) $_POST['question_' . $question['id']] : 0;
-        $selectedAnswer = $selectedAnswerId > 0
-            ? dbOne(
-                'SELECT * FROM test_answers WHERE id = :id AND question_id = :question_id',
-                ['id' => $selectedAnswerId, 'question_id' => $question['id']]
-            )
-            : null;
+        $selectedAnswerId = (int) ($_POST['question_' . $question['id']] ?? 0);
+        $selectedAnswer = null;
+        $correctAnswer = null;
 
-        $correctAnswer = dbOne(
-            'SELECT * FROM test_answers WHERE question_id = :question_id AND is_correct = 1 LIMIT 1',
-            ['question_id' => $question['id']]
-        );
+        foreach ($question['answers'] as $answer) {
+            if ((int) $answer['is_correct'] === 1) {
+                $correctAnswer = $answer;
+            }
+            if ((int) $answer['id'] === $selectedAnswerId) {
+                $selectedAnswer = $answer;
+            }
+        }
 
         $isCorrect = $selectedAnswer && $correctAnswer && (int) $selectedAnswer['id'] === (int) $correctAnswer['id'];
         if ($isCorrect) {
             $correctAnswers++;
         }
 
-        $attemptAnswers[] = [
+        $attemptAnswerRows[] = [
             'question_id' => $question['id'],
             'answer_id' => $selectedAnswer['id'] ?? null,
             'question_text' => $question['text'],
@@ -1061,14 +1111,7 @@ function handleTestSubmitAction(): void
         ];
     }
 
-    $finishedAt = date('c');
-    $startedTimestamp = strtotime($startedAt);
-    $finishedTimestamp = strtotime($finishedAt);
-    $durationSeconds = $startedTimestamp !== false && $finishedTimestamp !== false
-        ? max(0, $finishedTimestamp - $startedTimestamp)
-        : 0;
-    $totalQuestions = count($task['questions']);
-    $scorePercent = $totalQuestions > 0 ? round(($correctAnswers / $totalQuestions) * 100, 2) : 0;
+    $scorePercent = $totalQuestions > 0 ? round(($correctAnswers / $totalQuestions) * 100, 2) : 0.0;
 
     $attemptId = dbTransaction(function () use (
         $fullName,
@@ -1080,8 +1123,8 @@ function handleTestSubmitAction(): void
         $totalQuestions,
         $correctAnswers,
         $scorePercent,
-        $attemptAnswers
-    ): int {
+        $attemptAnswerRows
+    ) {
         dbExecute(
             'INSERT INTO test_attempts (
                 full_name,
@@ -1125,7 +1168,7 @@ function handleTestSubmitAction(): void
 
         $attemptId = dbLastInsertId();
 
-        foreach ($attemptAnswers as $row) {
+        foreach ($attemptAnswerRows as $row) {
             dbExecute(
                 'INSERT INTO test_attempt_answers (
                     attempt_id,
@@ -1159,16 +1202,16 @@ function handleTestSubmitAction(): void
         return $attemptId;
     });
 
-    redirectTo('test_result', ['id' => $attemptId]);
+    redirectTo('test_result', ['attemptId' => $attemptId]);
 }
 
 function showTestResultPage(): void
 {
-    $attemptId = (int) ($_GET['id'] ?? 0);
+    $attemptId = (int) ($_GET['attemptId'] ?? 0);
     $attempt = dbOne('SELECT * FROM test_attempts WHERE id = :id', ['id' => $attemptId]);
 
     if (!$attempt) {
-        setFlash('error', 'Результат тестирования не найден.');
+        setFlash('error', 'Попытка не найдена.');
         redirectTo('test');
     }
 
@@ -1208,24 +1251,24 @@ function handleTestTaskCreatePage(): void
     if (isPost()) {
         $form = [
             'code' => normalizeKarmaDevCode((string) ($_POST['code'] ?? '')),
-            'is_active' => (string) ((int) ($_POST['is_active'] ?? 0) === 1 ? 1 : 0),
+            'is_active' => (string) ($_POST['is_active'] ?? '1'),
         ];
         $questions = normalizeTestQuestions($_POST['questions'] ?? []);
 
         if ($form['code'] === '') {
-            $errors[] = 'Code тестовой задачи обязателен.';
+            $errors[] = 'Code задачи обязателен.';
         }
 
         if (dbOne('SELECT id FROM test_tasks WHERE code = :code', ['code' => $form['code']])) {
-            $errors[] = 'Тестовая задача с таким кодом уже существует.';
+            $errors[] = 'Тестовая задача с таким code уже существует.';
         }
 
         if (!validateTestQuestions($questions)) {
-            $errors[] = 'Добавьте хотя бы один вопрос, минимум два варианта ответа и один правильный.';
+            $errors[] = 'Добавьте хотя бы один вопрос, минимум 2 ответа на вопрос и один правильный вариант.';
         }
 
         if (!$errors) {
-            $testTaskId = dbTransaction(function () use ($form, $questions): int {
+            dbTransaction(function () use ($form, $questions) {
                 dbExecute(
                     'INSERT INTO test_tasks (code, is_active, created_at) VALUES (:code, :is_active, :created_at)',
                     [
@@ -1237,12 +1280,10 @@ function handleTestTaskCreatePage(): void
 
                 $testTaskId = dbLastInsertId();
                 saveTestQuestions($testTaskId, $questions);
-
-                return $testTaskId;
             });
 
             setFlash('success', 'Тестовая задача создана.');
-            redirectTo('test_tasks_view', ['id' => $testTaskId]);
+            redirectTo('test_tasks');
         }
     }
 
@@ -1256,8 +1297,8 @@ function handleTestTaskCreatePage(): void
 
 function showTestTaskViewPage(): void
 {
-    $taskId = (int) ($_GET['id'] ?? 0);
-    $task = getTestTaskWithQuestions($taskId);
+    $id = (int) ($_GET['id'] ?? 0);
+    $task = getTestTaskWithQuestions($id);
 
     if (!$task) {
         setFlash('error', 'Тестовая задача не найдена.');
@@ -1265,15 +1306,15 @@ function showTestTaskViewPage(): void
     }
 
     render('testing/task_view', [
-        'pageTitle' => $task['code'],
+        'pageTitle' => 'Карточка тестовой задачи',
         'task' => $task,
     ]);
 }
 
 function handleTestTaskEditPage(): void
 {
-    $taskId = (int) ($_GET['id'] ?? 0);
-    $task = getTestTaskWithQuestions($taskId);
+    $id = (int) ($_GET['id'] ?? 0);
+    $task = getTestTaskWithQuestions($id);
 
     if (!$task) {
         setFlash('error', 'Тестовая задача не найдена.');
@@ -1290,47 +1331,48 @@ function handleTestTaskEditPage(): void
     if (isPost()) {
         $form = [
             'code' => normalizeKarmaDevCode((string) ($_POST['code'] ?? '')),
-            'is_active' => (string) ((int) ($_POST['is_active'] ?? 0) === 1 ? 1 : 0),
+            'is_active' => (string) ($_POST['is_active'] ?? '1'),
         ];
         $questions = normalizeTestQuestions($_POST['questions'] ?? []);
 
         if ($form['code'] === '') {
-            $errors[] = 'Code тестовой задачи обязателен.';
+            $errors[] = 'Code задачи обязателен.';
         }
 
-        if (dbOne('SELECT id FROM test_tasks WHERE code = :code AND id != :id', ['code' => $form['code'], 'id' => $taskId])) {
-            $errors[] = 'Тестовая задача с таким кодом уже существует.';
+        $existingTask = dbOne('SELECT id FROM test_tasks WHERE code = :code', ['code' => $form['code']]);
+        if ($existingTask && (int) $existingTask['id'] !== $id) {
+            $errors[] = 'Тестовая задача с таким code уже существует.';
         }
 
         if (!validateTestQuestions($questions)) {
-            $errors[] = 'Добавьте хотя бы один вопрос, минимум два варианта ответа и один правильный.';
+            $errors[] = 'Добавьте хотя бы один вопрос, минимум 2 ответа на вопрос и один правильный вариант.';
         }
 
         if (!$errors) {
-            dbTransaction(function () use ($taskId, $form, $questions): void {
+            dbTransaction(function () use ($id, $form, $questions) {
                 dbExecute(
                     'UPDATE test_tasks SET code = :code, is_active = :is_active WHERE id = :id',
                     [
                         'code' => $form['code'],
                         'is_active' => (int) $form['is_active'],
-                        'id' => $taskId,
+                        'id' => $id,
                     ]
                 );
 
-                saveTestQuestions($taskId, $questions);
+                saveTestQuestions($id, $questions);
             });
 
             setFlash('success', 'Тестовая задача обновлена.');
-            redirectTo('test_tasks_view', ['id' => $taskId]);
+            redirectTo('test_tasks_view', ['id' => $id]);
         }
     }
 
     render('testing/tasks_edit', [
         'pageTitle' => 'Редактирование тестовой задачи',
+        'taskId' => $id,
         'form' => $form,
         'questions' => $questions,
         'errors' => $errors,
-        'taskId' => $taskId,
     ]);
 }
 
@@ -1340,15 +1382,18 @@ function handleTestTaskDeleteAction(): void
         redirectTo('test_tasks');
     }
 
-    $taskId = (int) ($_GET['id'] ?? 0);
-    dbExecute('DELETE FROM test_tasks WHERE id = :id', ['id' => $taskId]);
+    $id = (int) ($_GET['id'] ?? 0);
+    dbExecute('DELETE FROM test_tasks WHERE id = :id', ['id' => $id]);
+
     setFlash('success', 'Тестовая задача удалена.');
     redirectTo('test_tasks');
 }
 
 function showTestResultsPage(): void
 {
-    $attempts = dbAll('SELECT * FROM test_attempts ORDER BY id DESC');
+    $attempts = dbAll(
+        'SELECT * FROM test_attempts ORDER BY finished_at DESC, id DESC'
+    );
 
     render('testing/results_list', [
         'pageTitle' => 'Логи тестирования',
@@ -1358,24 +1403,21 @@ function showTestResultsPage(): void
 
 function showTestResultDetailsPage(): void
 {
-    $attemptId = (int) ($_GET['id'] ?? 0);
-    $attempt = dbOne('SELECT * FROM test_attempts WHERE id = :id', ['id' => $attemptId]);
+    $id = (int) ($_GET['id'] ?? 0);
+    $attempt = dbOne('SELECT * FROM test_attempts WHERE id = :id', ['id' => $id]);
 
     if (!$attempt) {
-        setFlash('error', 'Попытка тестирования не найдена.');
+        setFlash('error', 'Попытка не найдена.');
         redirectTo('test_results');
     }
 
     $answers = dbAll(
-        'SELECT question_text, selected_answer_text, correct_answer_text, is_correct
-         FROM test_attempt_answers
-         WHERE attempt_id = :attempt_id
-         ORDER BY id ASC',
-        ['attempt_id' => $attemptId]
+        'SELECT * FROM test_attempt_answers WHERE attempt_id = :attempt_id ORDER BY id ASC',
+        ['attempt_id' => $id]
     );
 
     render('testing/result_view', [
-        'pageTitle' => 'Попытка #' . $attemptId,
+        'pageTitle' => 'Просмотр попытки',
         'attempt' => $attempt,
         'answers' => $answers,
     ]);
@@ -1383,35 +1425,20 @@ function showTestResultDetailsPage(): void
 
 function exportTestingReport(): void
 {
-    $attempts = dbAll('SELECT * FROM test_attempts ORDER BY id DESC');
+    $attempts = dbAll(
+        'SELECT * FROM test_attempts ORDER BY finished_at DESC, id DESC'
+    );
+
+    $filename = 'testing-results-' . date('Y-m-d') . '.xls';
 
     header('Content-Type: application/vnd.ms-excel; charset=UTF-8');
-    header('Content-Disposition: attachment; filename="testing-results-' . date('Y-m-d') . '.xls"');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
 
-    echo "\xEF\xBB\xBF";
-    echo '<html><head><meta charset="UTF-8"></head><body>';
-    echo '<h1>Testing Results</h1>';
-    echo '<table border="1"><tr><th>ID</th><th>ФИО</th><th>Задача</th><th>Дата</th><th>Начало</th><th>Завершение</th><th>Длительность</th><th>Всего вопросов</th><th>Правильных</th><th>Процент</th><th>Ответы</th></tr>';
+    echo "<html><head><meta charset='UTF-8'></head><body>";
+    echo '<table border="1">';
+    echo '<tr><th>ID</th><th>ФИО</th><th>Номер задачи</th><th>Дата прохождения</th><th>Started At</th><th>Finished At</th><th>Duration Seconds</th><th>Total Questions</th><th>Correct Answers</th><th>Score Percent</th></tr>';
 
     foreach ($attempts as $attempt) {
-        $answers = dbAll(
-            'SELECT question_text, selected_answer_text, correct_answer_text, is_correct
-             FROM test_attempt_answers
-             WHERE attempt_id = :attempt_id
-             ORDER BY id ASC',
-            ['attempt_id' => $attempt['id']]
-        );
-
-        $answerParts = [];
-        foreach ($answers as $index => $answer) {
-            $answerParts[] =
-                ($index + 1) . '. ' .
-                $answer['question_text'] .
-                ' | ответ: ' . ($answer['selected_answer_text'] ?: 'Нет ответа') .
-                ' | правильный: ' . ($answer['correct_answer_text'] ?: '') .
-                ' | статус: ' . ((int) $answer['is_correct'] === 1 ? 'Верно' : 'Ошибка');
-        }
-
         echo '<tr>';
         echo '<td>' . e($attempt['id']) . '</td>';
         echo '<td>' . e($attempt['full_name']) . '</td>';
@@ -1423,11 +1450,9 @@ function exportTestingReport(): void
         echo '<td>' . e($attempt['total_questions']) . '</td>';
         echo '<td>' . e($attempt['correct_answers']) . '</td>';
         echo '<td>' . e($attempt['score_percent']) . '</td>';
-        echo '<td>' . nl2br(e(implode("\n", $answerParts))) . '</td>';
         echo '</tr>';
     }
 
-    echo '</table>';
-    echo '</body></html>';
+    echo '</table></body></html>';
     exit;
 }
